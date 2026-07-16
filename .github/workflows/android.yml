@@ -35,7 +35,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
+        run: |
+          sdkmanager --install "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,9 +57,6 @@ jobs:
 
       - name: Init Android project
         working-directory: src-tauri
-        env:
-          NDK_HOME: ${{ steps.setup-android.outputs.ndk-path }}
-          ANDROID_HOME: ${{ steps.setup-android.outputs.sdk-path }}
         run: cargo tauri android init
 
       - name: Regenerate app icons
@@ -65,9 +64,6 @@ jobs:
 
       - name: Build Android APK
         working-directory: src-tauri
-        env:
-          NDK_HOME: ${{ steps.setup-android.outputs.ndk-path }}
-          ANDROID_HOME: ${{ steps.setup-android.outputs.sdk-path }}
         run: cargo tauri android build --apk
 
       - name: Upload APK
