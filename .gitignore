@@ -15,3 +15,7 @@ src-tauri/gen/android/local.properties
 
 # OS junk
 .DS_Store
+
+# gen/android is a generated project — regenerated fresh in CI via `tauri android init`.
+# Committing it is unreliable (git doesn't track empty dirs Android/Java expects).
+src-tauri/gen/android

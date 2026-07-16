@@ -50,6 +50,16 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
+      - name: Remove stale gen/android (regenerated fresh below)
+        run: rm -rf src-tauri/gen/android
+
+      - name: Init Android project
+        working-directory: src-tauri
+        env:
+          NDK_HOME: ${{ steps.setup-android.outputs.ndk-path }}
+          ANDROID_HOME: ${{ steps.setup-android.outputs.sdk-path }}
+        run: cargo tauri android init
+
       - name: Regenerate app icons
         run: cargo tauri icon src-tauri/icons/icon.png
 
