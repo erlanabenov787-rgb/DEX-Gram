@@ -55,6 +55,10 @@ jobs:
       - name: Remove stale gen/android (regenerated fresh below)
         run: rm -rf src-tauri/gen/android
 
+      - name: Build frontend
+        working-directory: frontend-development
+        run: pnpm run build
+
       - name: Init Android project
         working-directory: src-tauri
         run: cargo tauri android init
