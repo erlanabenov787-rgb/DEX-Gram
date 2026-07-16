@@ -1,0 +1,13 @@
+[workspace]
+members = ["messenger-backend", "src-tauri"]
+resolver = "2"
+
+[profile.dev]
+debug = 1
+strip = "debuginfo"
+
+[profile.release]
+lto = true
+opt-level = 3
+strip = true
+codegen-units = 1

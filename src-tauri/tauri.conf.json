@@ -1,0 +1,36 @@
+{
+  "$schema": "./gen/schemas/desktop-schema.json",
+  "productName": "messenger-app",
+  "version": "0.1.0",
+  "identifier": "kz.yerlan.messenger",
+  "build": {
+    "beforeDevCommand": "cd ../frontend-development && npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "cd ../frontend-development && npm run build",
+    "frontendDist": "../frontend-development/out"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Messenger",
+        "width": 420,
+        "height": 800,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
