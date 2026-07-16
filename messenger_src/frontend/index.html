@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Messenger</title>
+<style>
+  :root{
+    --bg: #0a0d12;
+    --panel: #11151d;
+    --panel-2: #171c26;
+    --line: #232a37;
+    --text: #e8ebf1;
+    --muted: #6b7686;
+    --signal: #49e0b3;
+    --signal-dim: #1f5c4c;
+    --warn: #e0834c;
+    --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    display:flex; flex-direction:column; overflow:hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ---------- top identity bar ---------- */
+  #topbar{
+    padding:14px 16px 12px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px; flex-shrink:0;
+    background:linear-gradient(180deg, var(--panel), var(--bg));
+  }
+  .ring{
+    width:34px; height:34px; border-radius:50%; position:relative; flex-shrink:0;
+  }
+  .ring::before, .ring::after{
+    content:''; position:absolute; inset:0; border-radius:50%; border:1.5px solid var(--signal-dim);
+  }
+  .ring::before{ inset:5px; border-color:var(--signal); opacity:.55; }
+  .ring::after{ inset:0; }
+  #topbar .id-block{ min-width:0; flex:1; }
+  #topbar .label{ font-size:10px; letter-spacing:.08em; color:var(--muted); text-transform:uppercase; }
+  #topbar .uid{
+    font-family:var(--mono); font-size:13px; color:var(--signal);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
+  /* ---------- views ---------- */
+  #view{ flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+
+  /* contact list */
+  #contacts{ padding:6px 0; }
+  .empty{
+    padding:60px 24px; text-align:center; color:var(--muted); font-size:14px; line-height:1.6;
+  }
+  .contact-row{
+    display:flex; align-items:center; gap:12px; padding:13px 16px;
+    border-bottom:1px solid var(--line); cursor:pointer;
+  }
+  .contact-row:active{ background:var(--panel-2); }
+  .avatar{
+    width:38px; height:38px; border-radius:50%; flex-shrink:0;
+    background:var(--panel-2); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+    font-family:var(--mono); font-size:13px; color:var(--signal);
+  }
+  .contact-meta{ min-width:0; flex:1; }
+  .contact-name{ font-size:15px; font-weight:600; }
+  .contact-id{ font-family:var(--mono); font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* chat thread */
+  #thread{ display:none; flex-direction:column; height:100%; }
+  #thread.active{ display:flex; }
+  #contacts-wrap.active{ display:block; }
+  #contacts-wrap{ display:none; height:100%; }
+  #view.list-mode #contacts-wrap{ display:block; }
+  #view.thread-mode #thread{ display:flex; }
+
+  #chatbar{
+    display:flex; align-items:center; gap:10px; padding:10px 14px;
+    border-bottom:1px solid var(--line); flex-shrink:0; background:var(--panel);
+  }
+  #back{ color:var(--signal); font-size:20px; background:none; border:none; padding:2px 4px; }
+  #chatbar .name{ font-weight:600; font-size:15px; }
+  #chatbar .peer-id{ font-family:var(--mono); font-size:10px; color:var(--muted); }
+
+  #messages{ flex:1; overflow-y:auto; padding:14px 12px; display:flex; flex-direction:column; gap:8px; }
+  .msg{
+    max-width:78%; padding:9px 12px; border-radius:14px; font-size:14.5px; line-height:1.4;
+    position:relative; word-wrap:break-word;
+  }
+  .msg.sent{ align-self:flex-end; background:var(--signal-dim); color:#d9fff0; border-bottom-right-radius:4px; }
+  .msg.received{ align-self:flex-start; background:var(--panel-2); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .msg .t{ display:block; font-size:9.5px; color:var(--muted); margin-top:3px; text-align:right; font-family:var(--mono); }
+
+  #composer{
+    display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--line);
+    background:var(--panel); flex-shrink:0; padding-bottom:max(10px, env(safe-area-inset-bottom));
+  }
+  #composer input{
+    flex:1; background:var(--panel-2); border:1px solid var(--line); border-radius:20px;
+    padding:10px 16px; color:var(--text); font-size:14.5px; outline:none;
+  }
+  #composer input:focus{ border-color:var(--signal-dim); }
+  #composer button{
+    width:38px; height:38px; border-radius:50%; border:none; background:var(--signal);
+    color:#052a20; font-size:16px; flex-shrink:0;
+  }
+  #composer button:active{ transform:scale(.94); }
+
+  /* fab + add contact */
+  #fab{
+    position:absolute; right:18px; bottom:18px; width:52px; height:52px; border-radius:50%;
+    background:var(--signal); color:#052a20; border:none; font-size:26px; box-shadow:0 4px 16px rgba(0,0,0,.4);
+  }
+  #modal-bg{
+    position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:flex-end; z-index:10;
+  }
+  #modal-bg.active{ display:flex; }
+  #modal{
+    background:var(--panel); width:100%; border-radius:18px 18px 0 0; padding:20px 18px 26px;
+    border-top:1px solid var(--line);
+  }
+  #modal h3{ margin:0 0 14px; font-size:16px; }
+  #modal input{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px; color:var(--text); font-size:14px; margin-bottom:10px; font-family:var(--sans);
+  }
+  #modal input.mono{ font-family:var(--mono); font-size:13px; }
+  #modal .row{ display:flex; gap:10px; margin-top:6px; }
+  #modal button{
+    flex:1; padding:11px; border-radius:10px; border:none; font-size:14px; font-weight:600;
+  }
+  #modal .cancel{ background:var(--panel-2); color:var(--muted); }
+  #modal .confirm{ background:var(--signal); color:#052a20; }
+</style>
+</head>
+<body>
+
+  <div id="topbar">
+    <div class="ring"></div>
+    <div class="id-block">
+      <div class="label">Твой UserID</div>
+      <div class="uid" id="my-uid">—</div>
+    </div>
+  </div>
+
+  <div id="view" class="list-mode" style="position:relative; flex:1; min-height:0;">
+    <div id="contacts-wrap">
+      <div id="contacts"></div>
+      <button id="fab">+</button>
+    </div>
+
+    <div id="thread">
+      <div id="chatbar">
+        <button id="back">‹</button>
+        <div>
+          <div class="name" id="peer-name">—</div>
+          <div class="peer-id" id="peer-id">—</div>
+        </div>
+      </div>
+      <div id="messages"></div>
+      <div id="composer">
+        <input id="msg-input" placeholder="Сообщение…" autocomplete="off" />
+        <button id="send">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-bg">
+    <div id="modal">
+      <h3>Добавить контакт</h3>
+      <input id="in-name" placeholder="Имя" />
+      <input id="in-uid" class="mono" placeholder="UserID собеседника" />
+      <input id="in-pub" class="mono" placeholder="Public key (hex)" />
+      <div class="row">
+        <button class="cancel" id="modal-cancel">Отмена</button>
+        <button class="confirm" id="modal-confirm">Добавить</button>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+  const invoke = (...args) => window.__TAURI__.core.invoke(...args);
+  const listen = (...args) => window.__TAURI__.event.listen(...args);
+
+  const el = (id) => document.getElementById(id);
+  const view = el('view');
+  let activeContact = null; // {user_id, display_name}
+
+  function fmtTime(unixSec){
+    const d = new Date(unixSec * 1000);
+    return d.toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' });
+  }
+
+  async function loadMe(){
+    const me = await invoke('get_me');
+    el('my-uid').textContent = me.user_id;
+  }
+
+  async function loadContacts(){
+    const contacts = await invoke('list_contacts');
+    const box = el('contacts');
+    if (contacts.length === 0){
+      box.innerHTML = '<div class="empty">Пока никого нет.<br>Нажми «+», чтобы добавить первый контакт.</div>';
+      return;
+    }
+    box.innerHTML = '';
+    for (const c of contacts){
+      const row = document.createElement('div');
+      row.className = 'contact-row';
+      row.innerHTML = `
+        <div class="avatar">${(c.display_name || '?').slice(0,1).toUpperCase()}</div>
+        <div class="contact-meta">
+          <div class="contact-name">${c.display_name}</div>
+          <div class="contact-id">${c.user_id}</div>
+        </div>`;
+      row.onclick = () => openThread(c);
+      box.appendChild(row);
+    }
+  }
+
+  async function openThread(contact){
+    activeContact = contact;
+    el('peer-name').textContent = contact.display_name;
+    el('peer-id').textContent = contact.user_id;
+    view.classList.remove('list-mode');
+    view.classList.add('thread-mode');
+    await loadMessages();
+  }
+
+  function closeThread(){
+    activeContact = null;
+    view.classList.remove('thread-mode');
+    view.classList.add('list-mode');
+  }
+
+  async function loadMessages(){
+    if (!activeContact) return;
+    const msgs = await invoke('get_history', { contactUserId: activeContact.user_id, limit: 200 });
+    const box = el('messages');
+    box.innerHTML = '';
+    for (const m of msgs){
+      const bubble = document.createElement('div');
+      bubble.className = 'msg ' + (m.direction === 'sent' ? 'sent' : 'received');
+      bubble.innerHTML = `${escapeHtml(m.text)}<span class="t">${fmtTime(m.sent_at)}</span>`;
+      box.appendChild(bubble);
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function escapeHtml(s){
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  async function sendCurrent(){
+    const input = el('msg-input');
+    const text = input.value.trim();
+    if (!text || !activeContact) return;
+    input.value = '';
+    try {
+      await invoke('send_message', { contactUserId: activeContact.user_id, text });
+    } catch (err) {
+      // Отправка реально может не удаться (нет ещё сессии с этим
+      // контактом, не настроены relay и т.д.) — раньше send_message
+      // всегда молча "успевал", т.к. только писал в локальную БД.
+      console.error('send_message failed:', err);
+      input.value = text; // не терять набранный текст
+      alert('Не удалось отправить: ' + err);
+      return;
+    }
+    await loadMessages();
+  }
+
+  // Приходит из src-tauri/src/lib.rs, когда node loop расшифровал
+  // входящее сообщение и сохранил его в историю — без этого экран не
+  // обновлялся бы, пока пользователь не откроет чат заново.
+  listen('message-received', (event) => {
+    const { from_user_id } = event.payload;
+    if (activeContact && activeContact.user_id === from_user_id) {
+      loadMessages();
+    }
+    // Тут же может появиться новый контакт, о котором мы раньше не
+    // знали (сообщение от него всё равно сохранится под его UserID) —
+    // список стоит освежить в любом случае.
+    loadContacts();
+  });
+
+  el('back').onclick = closeThread;
+  el('send').onclick = sendCurrent;
+  el('msg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCurrent(); });
+
+  el('fab').onclick = () => el('modal-bg').classList.add('active');
+  el('modal-cancel').onclick = () => el('modal-bg').classList.remove('active');
+  el('modal-confirm').onclick = async () => {
+    const display_name = el('in-name').value.trim();
+    const user_id = el('in-uid').value.trim();
+    const public_key_hex = el('in-pub').value.trim();
+    if (!display_name || !user_id || !public_key_hex) return;
+    await invoke('add_contact', { userId: user_id, displayName: display_name, publicKeyHex: public_key_hex });
+    el('in-name').value = ''; el('in-uid').value = ''; el('in-pub').value = '';
+    el('modal-bg').classList.remove('active');
+    await loadContacts();
+  };
+
+  loadMe();
+  loadContacts();
+</script>
+</body>
+</html>

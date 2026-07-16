@@ -1,0 +1,3 @@
+[workspace]
+members = ["messenger-backend", "src-tauri"]
+resolver = "2"
