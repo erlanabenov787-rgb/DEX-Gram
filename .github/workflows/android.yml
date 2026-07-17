@@ -70,7 +70,7 @@ jobs:
 
       - name: Build Android APK
         working-directory: src-tauri
-        run: cargo tauri android build --apk
+        run: cargo tauri android build --apk --debug
         env:
           TAURI_ANDROID_TARGET_TRIPLES: aarch64-linux-android
 
