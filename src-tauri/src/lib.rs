@@ -144,10 +144,7 @@ async fn send_message(
     let (resp_tx, resp_rx) = oneshot::channel();
     state
         .node_commands
-            to: contact_user_id.clone(),
-    text: text.into_bytes(),
-    respond_to: resp_tx,
-}).send(NodeCommand::SendText {
+        .send(NodeCommand::SendText {
             to: contact_user_id.clone(),
             text: text.into_bytes(),
             respond_to: resp_tx,
