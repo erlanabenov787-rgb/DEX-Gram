@@ -1,7 +1,8 @@
-# Rust
+# Rust build artifacts
 /target
 messenger-backend/target
 src-tauri/target
+bootstrap-server/target
 
 # Node / frontend
 frontend-development/node_modules
@@ -13,11 +14,14 @@ src-tauri/gen/android/app/build
 src-tauri/gen/android/.gradle
 src-tauri/gen/android/local.properties
 
-# OS junk
-.DS_Store
-
 # gen/android is a generated project — regenerated fresh in CI via `tauri android init`.
 # Committing it is unreliable (git doesn't track empty dirs Android/Java expects).
 src-tauri/gen/android
+
+# Стale/duplicate copies — NOT part of the build
 extracted_project/
-extracted_project/
+messenger/
+
+# OS junk
+.DS_Store
+Thumbs.db

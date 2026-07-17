@@ -121,11 +121,11 @@
 
   --chart-1: oklch(0.72 0.14 165);
   --chart-2: oklch(0.65 0.12 230);
-  --chart-3: oklch(0.75 0.14 60);
-  --chart-4: oklch(0.68 0.18 25);
-  --chart-5: oklch(0.7 0.02 250);
+  --chart-3: oklch(0.78 0.14 60);
+  --chart-4: oklch(0.7 0.18 25);
+  --chart-5: oklch(0.6 0.02 250);
 
-  --sidebar: oklch(0.19 0.009 250);
+  --sidebar: oklch(0.2 0.01 250);
   --sidebar-foreground: oklch(0.96 0.004 240);
   --sidebar-primary: oklch(0.72 0.14 165);
   --sidebar-primary-foreground: oklch(0.16 0.03 165);
@@ -137,33 +137,54 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: var(--color-border);
+    outline-color: var(--color-ring);
   }
-  html,
+
   body {
-    height: 100%;
+    background: var(--color-background);
+    color: var(--color-foreground);
   }
-  body {
-    @apply bg-background text-foreground;
-    -webkit-font-smoothing: antialiased;
+
+  /* ── Safe-area insets (Android status bar / notch / iOS Dynamic Island) ──
+   *
+   * Работает только когда viewport-fit=cover задан в <meta viewport> /
+   * Next.js viewport export. Без него env(safe-area-inset-top) = 0.
+   *
+   * .safe-top добавляется к элементам, которые должны не залезать под
+   * системный статус-бар: шапка ContactList, заголовок Conversation.
+   * padding-top = max(env(...), исходный padding) — чтобы на обычных
+   * устройствах без notch размер не схлопывался в 0.
+   */
+  .safe-top {
+    padding-top: max(env(safe-area-inset-top, 0px), 0.75rem);
+  }
+
+  /* Вариант для flex-элементов где нужен дополнительный gap сверху */
+  .safe-top-header {
+    padding-top: max(env(safe-area-inset-top, 0px), 0.75rem);
+    padding-bottom: 0.75rem;
+  }
+
+  /* Нижние элементы (кнопка "Add contact") — нужно на устройствах с
+   * home indicator (iPhone/Android gesture nav bar). */
+  .safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem);
   }
 }
 
-/* thin, unobtrusive scrollbars for the chat / list panes */
-@layer utilities {
-  .scroll-slim {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
-  }
-  .scroll-slim::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .scroll-slim::-webkit-scrollbar-thumb {
-    background-color: var(--border);
-    border-radius: 999px;
-  }
-  .scroll-slim::-webkit-scrollbar-track {
-    background: transparent;
-  }
+/* Thin scrollbar for contact list */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.7 0 0 / 20%) transparent;
+}
+.scroll-slim::-webkit-scrollbar {
+  width: 4px;
+}
+.scroll-slim::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: oklch(0.7 0 0 / 20%);
+  border-radius: 2px;
 }

@@ -7,7 +7,6 @@ import {
   onMessageReceived,
   type Contact,
   type Me,
-  type Relay,
 } from '@/lib/tauri'
 import { ContactList } from './contact-list'
 import { Conversation } from './conversation'
@@ -38,7 +37,7 @@ export function MessengerApp() {
     try {
       setContacts(await api.listContacts())
     } catch (e) {
-      console.log('[v0] list_contacts failed:', e)
+      console.log('[messenger] list_contacts failed:', e)
     }
   }, [])
 
@@ -47,7 +46,7 @@ export function MessengerApp() {
     api
       .getMe()
       .then(setMe)
-      .catch((e) => console.log('[v0] get_me failed:', e))
+      .catch((e) => console.log('[messenger] get_me failed:', e))
     loadContacts()
   }, [loadContacts])
 
@@ -71,18 +70,17 @@ export function MessengerApp() {
     }
   }, [loadContacts])
 
-  // Relays come from the user-pasted bootstrap response. Rethrows so the
-  // settings form can surface the error inline.
+  // Bootstrap URL flow: save URL → Rust fetches relay list automatically.
   const handleConnect = useCallback(
-    async (relays: Relay[]) => {
+    async (bootstrapUrl: string) => {
       if (connecting) return
       setConnecting(true)
       try {
-        await api.updateRelays(relays)
+        await api.setBootstrapUrl(bootstrapUrl)
         setConnected(true)
         setSettingsOpen(false)
       } catch (e) {
-        console.log('[v0] update_relays failed:', e)
+        console.log('[messenger] set_bootstrap_url failed:', e)
         throw e
       } finally {
         setConnecting(false)

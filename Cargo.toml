@@ -1,5 +1,5 @@
 [workspace]
-members = ["messenger-backend", "src-tauri"]
+members = ["messenger-backend", "src-tauri", "bootstrap-server"]
 resolver = "2"
 
 [profile.dev]
@@ -11,3 +11,4 @@ lto = true
 opt-level = 3
 strip = true
 codegen-units = 1
+panic = "abort"

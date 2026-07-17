@@ -7,12 +7,15 @@ const geistSans = Geist({ subsets: ['latin'], variable: '--font-geist-sans' })
 const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-geist-mono' })
 
 export const metadata: Metadata = {
-  title: 'Cipher — private messenger',
-  description: 'End-to-end encrypted, peer-to-peer desktop messenger.',
-  generator: 'v0.app',
+  title: 'DEX-Gram — private messenger',
+  description: 'End-to-end encrypted, peer-to-peer messenger.',
 }
 
 export const viewport: Viewport = {
+  // viewport-fit=cover: WebView растягивается под вырез/notch/статус-бар.
+  // Контент сам добавляет padding через env(safe-area-inset-*).
+  // Без этого env(safe-area-inset-top) всегда равен 0.
+  viewportFit: 'cover',
   colorScheme: 'light dark',
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#f7f8f9' },

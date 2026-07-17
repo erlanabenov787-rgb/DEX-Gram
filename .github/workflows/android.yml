@@ -31,7 +31,6 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        id: setup-android
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
@@ -45,12 +44,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
-      - name: Cache cargo
+      - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          key: android-aarch64
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -69,11 +69,19 @@ jobs:
         run: cargo tauri icon src-tauri/icons/icon.png
 
       - name: Build Android APK
-        run: cargo tauri android build --apk --debug
+        working-directory: src-tauri
+        run: cargo tauri android build --apk
+        env:
+          TAURI_ANDROID_TARGET_TRIPLES: aarch64-linux-android
+
+      - name: List APK sizes (диагностика)
+        run: |
+          find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" \
+            -exec du -sh {} \;
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: messenger-apk
+          name: messenger-apk-aarch64
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error

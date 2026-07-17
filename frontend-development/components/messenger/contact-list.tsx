@@ -38,8 +38,13 @@ export function ContactList({
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
-      {/* identity header */}
-      <header className="flex items-center gap-3 border-b border-border px-4 py-3">
+      {/* ── identity header ──────────────────────────────────────────────────
+       *  safe-top-header: padding-top = max(env(safe-area-inset-top), 0.75rem)
+       *  Это гарантирует что шапка всегда ниже системного статус-бара Android
+       *  и под вырезом (notch), не залезая под иконки / часы.
+       *  На обычных устройствах без notch padding остаётся равным 0.75rem.
+       */}
+      <header className="safe-top-header flex items-center gap-3 border-b border-border px-4">
         <button
           type="button"
           onClick={onOpenIdentity}
@@ -125,8 +130,8 @@ export function ContactList({
         )}
       </div>
 
-      {/* add contact */}
-      <div className="border-t border-border p-3">
+      {/* add contact — safe-bottom: отступ снизу под navigation bar */}
+      <div className="safe-bottom border-t border-border px-3 pt-3">
         <button
           type="button"
           onClick={onAdd}
@@ -152,7 +157,7 @@ function EmptyContacts({ hasContacts, onAdd }: { hasContacts: boolean; onAdd: ()
         <>
           <p className="text-[15px] font-semibold text-foreground">No contacts yet</p>
           <p className="mt-1 mb-4 text-sm leading-relaxed text-muted-foreground text-pretty">
-            Add someone by their UserID or scan-free QR card to start an encrypted conversation.
+            Add someone by their UserID or scan their QR card to start an encrypted conversation.
           </p>
           <button
             type="button"
