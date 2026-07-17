@@ -1,0 +1,80 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Java (нужен для Gradle/Android) ────────────────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ── Android SDK + NDK ───────────────────────────────────────────────────
+      - name: Setup Android SDK
+        id: setup-android
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 27
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      # ── Rust + Android targets ──────────────────────────────────────────────
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # ── Node.js + pnpm ──────────────────────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+      # ── Tauri CLI (через npm — prebuilt бинарь, намного быстрее cargo install)
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      # ── Frontend: установка зависимостей + сборка ──────────────────────────
+      - name: Install frontend deps
+        working-directory: frontend-development
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (Next.js → static export → out/)
+        working-directory: frontend-development
+        run: pnpm build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+      # ── APK (debug — автоматически подписан, можно сразу ставить на телефон)
+      - name: Build Android debug APK
+        env:
+          NDK_HOME: ${{ steps.setup-android.outputs.ndk-path }}
+          ANDROID_HOME: ${{ steps.setup-android.outputs.sdk-path }}
+          ANDROID_SDK_ROOT: ${{ steps.setup-android.outputs.sdk-path }}
+        run: tauri android build --apk --debug
+
+      # ── Загружаем APK как артефакт ─────────────────────────────────────────
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: messenger-debug
+          path: src-tauri/gen/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
