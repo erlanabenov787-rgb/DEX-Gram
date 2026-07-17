@@ -1,6 +1,6 @@
 {
   "$schema": "./gen/schemas/desktop-schema.json",
-  "productName": "messenger-app",
+  "productName": "Meshly",
   "version": "0.1.0",
   "identifier": "kz.yerlan.messenger",
   "build": {
