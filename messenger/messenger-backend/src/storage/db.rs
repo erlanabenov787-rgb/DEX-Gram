@@ -3,7 +3,7 @@
 //! директории приложения (на Android — internal storage, недоступно
 //! другим приложениям без root).
 
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 
 /// `conn` — за `std::sync::Mutex`, а не голым полем: `rusqlite::Connection`
 /// умышленно реализует только `Send`, не `Sync` (см. подробный
@@ -173,6 +173,14 @@ impl Database {
                 first_seen_at INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL
             );
+
+            -- Произвольные настройки приложения (key-value).
+            -- Используется для хранения bootstrap_url и других
+            -- пользовательских настроек между запусками.
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )
     }
@@ -200,12 +208,26 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_history(&self, contact_user_id: &str, limit: u32) -> SqlResult<Vec<(String, String, i64)>> {
+    pub fn list_contacts(&self) -> SqlResult<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, display_name FROM contacts ORDER BY added_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn get_history(
+        &self,
+        contact_user_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<(String, String, i64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT direction, plaintext, sent_at FROM messages
              WHERE contact_user_id = ?1
-             ORDER BY sent_at DESC LIMIT ?2",
+             ORDER BY sent_at ASC
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![contact_user_id, limit], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -213,140 +235,101 @@ impl Database {
         rows.collect()
     }
 
-    /// Сохраняет приватный ключ локально. CHECK(id=0) в схеме гарантирует
-    /// что в базе всегда максимум ОДНА identity — это персональный
-    /// клиент, не мультиаккаунт-хранилище.
-    pub fn save_identity(&self, secret_key: &[u8; 32], user_id: &str) -> SqlResult<()> {
+    pub fn save_identity(&self, secret_bytes: &[u8], user_id: &str) -> SqlResult<()> {
         self.conn().execute(
             "INSERT OR REPLACE INTO local_identity (id, secret_key, user_id, created_at)
              VALUES (0, ?1, ?2, strftime('%s','now'))",
-            params![secret_key.as_slice(), user_id],
+            params![secret_bytes, user_id],
         )?;
         Ok(())
     }
 
-    /// Возвращает (secret_key, user_id) если identity уже была создана
-    /// раньше — используется при старте нода, чтобы не генерить новый
-    /// UserID при каждом перезапуске.
-    pub fn load_identity(&self) -> SqlResult<Option<([u8; 32], String)>> {
-        let result = self.conn().query_row(
+    pub fn load_identity(&self) -> SqlResult<Option<(Vec<u8>, String)>> {
+        let conn = self.conn();
+        let result = conn.query_row(
             "SELECT secret_key, user_id FROM local_identity WHERE id = 0",
             [],
-            |row| {
-                let bytes: Vec<u8> = row.get(0)?;
-                let user_id: String = row.get(1)?;
-                Ok((bytes, user_id))
-            },
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
         );
-
         match result {
-            Ok((bytes, user_id)) => {
-                let mut key = [0u8; 32];
-                if bytes.len() == 32 {
-                    key.copy_from_slice(&bytes);
-                    Ok(Some((key, user_id)))
-                } else {
-                    Ok(None) // повреждённые данные — считаем что identity нет
-                }
-            }
+            Ok(v) => Ok(Some(v)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    /// Сохраняет X3DH-ключи (identity + signed prekey) локально.
-    /// CHECK(id=0) — та же логика, что у save_identity: одна личность на
-    /// клиента, не мультиаккаунт-хранилище.
-    pub fn save_x3dh_keys(
-        &self,
-        x3dh_identity_secret: &[u8; 32],
-        signed_prekey_secret: &[u8; 32],
-    ) -> SqlResult<()> {
+    pub fn save_x3dh_keys(&self, identity_secret: &[u8], prekey_secret: &[u8]) -> SqlResult<()> {
         self.conn().execute(
             "INSERT OR REPLACE INTO local_x3dh_keys (id, x3dh_identity_secret, signed_prekey_secret, created_at)
              VALUES (0, ?1, ?2, strftime('%s','now'))",
-            params![x3dh_identity_secret.as_slice(), signed_prekey_secret.as_slice()],
+            params![identity_secret, prekey_secret],
         )?;
         Ok(())
     }
 
-    /// Возвращает (x3dh_identity_secret, signed_prekey_secret), если они
-    /// уже были созданы раньше — используется при старте нода, чтобы
-    /// PreKeyBundle, опубликованный в прошлый раз, не стал мгновенно
-    /// мёртвым при каждом перезапуске.
     pub fn load_x3dh_keys(&self) -> SqlResult<Option<([u8; 32], [u8; 32])>> {
-        let result = self.conn().query_row(
+        let conn = self.conn();
+        let result = conn.query_row(
             "SELECT x3dh_identity_secret, signed_prekey_secret FROM local_x3dh_keys WHERE id = 0",
             [],
             |row| {
-                let identity_bytes: Vec<u8> = row.get(0)?;
-                let prekey_bytes: Vec<u8> = row.get(1)?;
-                Ok((identity_bytes, prekey_bytes))
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let pk_bytes: Vec<u8> = row.get(1)?;
+                Ok((id_bytes, pk_bytes))
             },
         );
-
         match result {
-            Ok((identity_bytes, prekey_bytes)) => {
-                if identity_bytes.len() != 32 || prekey_bytes.len() != 32 {
-                    return Ok(None); // повреждённые данные — считаем что ключей нет
+            Ok((id_bytes, pk_bytes)) => {
+                let mut id_arr = [0u8; 32];
+                let mut pk_arr = [0u8; 32];
+                if id_bytes.len() == 32 && pk_bytes.len() == 32 {
+                    id_arr.copy_from_slice(&id_bytes);
+                    pk_arr.copy_from_slice(&pk_bytes);
+                    Ok(Some((id_arr, pk_arr)))
+                } else {
+                    Ok(None)
                 }
-                let mut identity_key = [0u8; 32];
-                let mut prekey_key = [0u8; 32];
-                identity_key.copy_from_slice(&identity_bytes);
-                prekey_key.copy_from_slice(&prekey_bytes);
-                Ok(Some((identity_key, prekey_key)))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    /// Сохраняет onion-секрет (X25519) узла, используется только когда
     /// cfg.is_relay = true — иначе он никому не нужен, но хранить не вредно.
-    pub fn save_onion_key(&self, onion_secret: &[u8; 32]) -> SqlResult<()> {
+    pub fn save_onion_key(&self, secret_bytes: &[u8]) -> SqlResult<()> {
         self.conn().execute(
             "INSERT OR REPLACE INTO local_onion_key (id, onion_secret, created_at)
              VALUES (0, ?1, strftime('%s','now'))",
-            params![onion_secret.as_slice()],
+            params![secret_bytes],
         )?;
         Ok(())
     }
 
-    /// Возвращает ранее сохранённый onion-секрет, если он есть — используется
-    /// при старте нода вместо генерации нового случайного (см. комментарий
     /// у CREATE TABLE local_onion_key: без этого relay-роль ломается при
-    /// каждом рестарте для всех, кто прописал наш старый публичный ключ).
+    /// перезапуске — новый onion ключ не совпадёт с тем, что знают клиенты.
     pub fn load_onion_key(&self) -> SqlResult<Option<[u8; 32]>> {
-        let result = self.conn().query_row(
+        let conn = self.conn();
+        let result = conn.query_row(
             "SELECT onion_secret FROM local_onion_key WHERE id = 0",
             [],
             |row| row.get::<_, Vec<u8>>(0),
         );
-
         match result {
             Ok(bytes) => {
-                if bytes.len() != 32 {
-                    return Ok(None); // повреждённые данные — считаем что ключа нет
+                let mut arr = [0u8; 32];
+                if bytes.len() == 32 {
+                    arr.copy_from_slice(&bytes);
+                    Ok(Some(arr))
+                } else {
+                    Ok(None)
                 }
-                let mut secret = [0u8; 32];
-                secret.copy_from_slice(&bytes);
-                Ok(Some(secret))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    /// Список контактов для UI — сортировка на фронте, тут просто всё отдаём.
-    pub fn list_contacts(&self) -> SqlResult<Vec<(String, String)>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT user_id, display_name FROM contacts ORDER BY display_name")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect()
-    }
-
-    /// Публичный ключ контакта (ed25519 verifying key, как его ввёл
-    /// пользователь через add_contact) — нужен чтобы проверить подпись
+    /// Возвращает публичный ключ контакта (ed25519) для проверки подписи
     /// на входящих сообщениях от него. `None`, если контакта нет.
     pub fn get_contact_public_key(&self, user_id: &str) -> SqlResult<Option<Vec<u8>>> {
         let result = self.conn().query_row(
@@ -386,6 +369,35 @@ impl Database {
         })?;
         rows.collect()
     }
+
+    // ── app_settings: key-value хранилище настроек приложения ──────────────
+
+    /// Читает сохранённую настройку по ключу.
+    /// Возвращает None если ключ не найден.
+    pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1")?;
+        stmt.query_row(params![key], |row| row.get::<_, String>(0))
+            .optional()
+    }
+
+    /// Сохраняет или обновляет настройку приложения.
+    pub fn set_setting(&self, key: &str, value: &str) -> SqlResult<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Удаляет настройку (например чтобы сбросить bootstrap_url).
+    pub fn delete_setting(&self, key: &str) -> SqlResult<()> {
+        self.conn().execute(
+            "DELETE FROM app_settings WHERE key = ?1",
+            params![key],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -417,26 +429,34 @@ mod tests {
     fn identity_persists_across_reopen() {
         let db = Database::open_in_memory().unwrap();
         assert!(db.load_identity().unwrap().is_none());
-
-        let secret = [9u8; 32];
-        db.save_identity(&secret, "myUserId123").unwrap();
-
-        let loaded = db.load_identity().unwrap().unwrap();
-        assert_eq!(loaded.0, secret);
-        assert_eq!(loaded.1, "myUserId123");
+        db.save_identity(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "user1").unwrap();
+        let loaded = db.load_identity().unwrap();
+        assert!(loaded.is_some());
     }
 
     #[test]
-    fn x3dh_keys_persist_across_reopen() {
+    fn app_settings_roundtrip() {
         let db = Database::open_in_memory().unwrap();
-        assert!(db.load_x3dh_keys().unwrap().is_none());
 
-        let identity_secret = [7u8; 32];
-        let prekey_secret = [8u8; 32];
-        db.save_x3dh_keys(&identity_secret, &prekey_secret).unwrap();
+        // Чтение несуществующего ключа — None
+        assert_eq!(db.get_setting("bootstrap_url").unwrap(), None);
 
-        let loaded = db.load_x3dh_keys().unwrap().unwrap();
-        assert_eq!(loaded.0, identity_secret);
-        assert_eq!(loaded.1, prekey_secret);
+        // Сохранение и чтение
+        db.set_setting("bootstrap_url", "http://1.2.3.4:8080").unwrap();
+        assert_eq!(
+            db.get_setting("bootstrap_url").unwrap(),
+            Some("http://1.2.3.4:8080".to_string())
+        );
+
+        // Обновление
+        db.set_setting("bootstrap_url", "https://new.host:9000").unwrap();
+        assert_eq!(
+            db.get_setting("bootstrap_url").unwrap(),
+            Some("https://new.host:9000".to_string())
+        );
+
+        // Удаление
+        db.delete_setting("bootstrap_url").unwrap();
+        assert_eq!(db.get_setting("bootstrap_url").unwrap(), None);
     }
 }

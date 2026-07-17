@@ -123,7 +123,7 @@ async fn get_history(
                     sent_at,
                 })
                 .collect();
-            msgs.reverse(); // из БД идёт DESC, в UI нужен хронологический порядок
+            msgs.sort_by_key(|m| m.sent_at);
             msgs
         })
         .map_err(|e| e.to_string())
@@ -135,81 +135,69 @@ async fn send_message(
     contact_user_id: String,
     text: String,
 ) -> Result<(), String> {
-    let (respond_to, response) = oneshot::channel();
+    {
+        let db = state.db.lock().await;
+        db.save_message(&contact_user_id, "sent", &text)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let (resp_tx, resp_rx) = oneshot::channel();
     state
         .node_commands
         .send(NodeCommand::SendText {
             to: contact_user_id.clone(),
-            text: text.clone().into_bytes(),
-            respond_to,
+            text: text.into_bytes(),
+            respond_to: resp_tx,
         })
-        .map_err(|_| "network node не запущен (task завершился?)".to_string())?;
+        .map_err(|_| "network node не запущен".to_string())?;
 
-    response
+    resp_rx
         .await
-        .map_err(|_| "network node не ответил на запрос отправки".to_string())?
-        .map_err(|e| e.to_string())?;
-
-    let db = state.db.lock().await;
-    db.save_message(&contact_user_id, "sent", &text)
+        .map_err(|_| "node не ответил на запрос отправки".to_string())?
         .map_err(|e| e.to_string())
 }
 
-/// Возвращает собственную карточку для показа QR-кода.
-///
-/// Фронтенд кодирует строку `user_id:public_key_hex` в QR (например через
-/// qrcode.js / qrcodejs). Собеседник сканирует, парсит по ":" и вызывает
-/// add_contact.
 #[tauri::command]
 fn get_my_card(state: State<AppState>) -> String {
-    let pubkey_hex = hex::encode(state.me.verifying_key.as_bytes());
-    format!("{}:{}", state.me.user_id, pubkey_hex)
+    serde_json::json!({
+        "user_id": state.me.user_id,
+        "public_key_hex": hex::encode(state.me.verifying_key.as_bytes()),
+    })
+    .to_string()
 }
 
-/// Найти пользователя по UserID через DHT.
-///
-/// Запускает Kademlia-поиск и ждёт ответа (таймаут 30 сек).
-/// Возвращает `{ user_id, public_key_hex }` если нашёл, иначе ошибку.
 #[tauri::command]
 async fn lookup_user(
     state: State<'_, AppState>,
     user_id: String,
-) -> Result<MeInfo, String> {
-    let (tx, rx) = oneshot::channel();
+) -> Result<serde_json::Value, String> {
+    let (resp_tx, resp_rx) = oneshot::channel();
     state
         .node_commands
         .send(NodeCommand::LookupUser {
             user_id: user_id.clone(),
-            respond_to: tx,
+            respond_to: resp_tx,
         })
         .map_err(|_| "network node не запущен".to_string())?;
 
-    let record = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+    let record = resp_rx
         .await
-        .map_err(|_| format!("таймаут: пользователь {user_id} не найден в DHT за 30 сек"))?
-        .map_err(|_| "node закрыл канал до ответа".to_string())?
+        .map_err(|_| "node не ответил на lookup".to_string())?
         .map_err(|e| e.to_string())?;
 
-    Ok(MeInfo {
-        user_id: record.user_id,
-        public_key_hex: hex::encode(&record.public_key),
-    })
+    Ok(serde_json::json!({
+        "user_id": record.user_id,
+        "public_key_hex": hex::encode(&record.public_key),
+    }))
 }
 
 /// Передаёт список relay-узлов, полученных от bootstrap, в network node.
 ///
-/// Фронтенд вызывает эту команду после того как получил список relay
-/// от bootstrap-сервера. Пользователь relay не видит и не вводит вручную.
-///
-/// После вызова NodeHandle:
-/// - обновляет RelayRegistry (виден всем фоновым задачам сразу)
-/// - подключается к новым relay
-/// - записывает их репутацию в локальную БД
-/// - отправляет начальный mailbox fetch к каждому relay
-#[tauri::command]
-async fn update_relays(
-    state: State<'_, AppState>,
+/// Используется внутренне при авто-fetch от bootstrap.
+/// Фронтенд вызывает эту команду только в редких случаях (ручной override).
+async fn apply_relays_internal(
     relays: Vec<RelayInfoDto>,
+    node_commands: &mpsc::UnboundedSender<NodeCommand>,
 ) -> Result<(), String> {
     let entries: Vec<RelayEntry> = relays
         .into_iter()
@@ -231,12 +219,168 @@ async fn update_relays(
         return Err("Список relay пуст или содержит только невалидные записи".to_string());
     }
 
-    state
-        .node_commands
+    node_commands
         .send(NodeCommand::UpdateRelays { relays: entries })
         .map_err(|_| "network node не запущен".to_string())?;
 
     Ok(())
+}
+
+/// GET {url}/relays → парсит JSON → отправляет NodeCommand::UpdateRelays.
+///
+/// Не блокирует запуск ноды: вызывается в фоновом таске с retry+backoff.
+async fn fetch_relays_from_bootstrap(
+    bootstrap_url: &str,
+    node_commands: &mpsc::UnboundedSender<NodeCommand>,
+) -> Result<(), String> {
+    let relays_url = format!(
+        "{}/relays",
+        bootstrap_url.trim_end_matches('/')
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("reqwest build: {e}"))?;
+
+    let resp = client
+        .get(&relays_url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {relays_url}: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Bootstrap ответил {}: {}",
+            resp.status(),
+            relays_url
+        ));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Не JSON от bootstrap: {e}"))?;
+
+    // Принимаем как { "relays": [...] }, так и просто [...]
+    let arr = if let Some(arr) = json.get("relays").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else if let Some(arr) = json.as_array() {
+        arr.clone()
+    } else {
+        return Err("Bootstrap вернул не массив relay и не объект с полем 'relays'".to_string());
+    };
+
+    let dtos: Vec<RelayInfoDto> = arr
+        .into_iter()
+        .filter_map(|item| {
+            let peer_id = item.get("peer_id")?.as_str()?.to_string();
+            let multiaddr = item.get("multiaddr")?.as_str()?.to_string();
+            let onion_public_key = item.get("onion_public_key")?.as_str()?.to_string();
+            Some(RelayInfoDto { peer_id, multiaddr, onion_public_key })
+        })
+        .collect();
+
+    if dtos.is_empty() {
+        return Err("Bootstrap вернул пустой или невалидный список relay".to_string());
+    }
+
+    apply_relays_internal(dtos, node_commands).await
+}
+
+/// Фоновый таск: пытается получить relay от bootstrap с exponential backoff.
+/// Не блокирует запуск приложения — делается в отдельном tokio-spawn.
+fn spawn_bootstrap_fetch(
+    bootstrap_url: String,
+    node_commands: mpsc::UnboundedSender<NodeCommand>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut delay = std::time::Duration::from_secs(3);
+        for attempt in 1u32..=8 {
+            tracing::info!(
+                "Авто-fetch relay от bootstrap (попытка {}/8): {}",
+                attempt,
+                bootstrap_url
+            );
+            match fetch_relays_from_bootstrap(&bootstrap_url, &node_commands).await {
+                Ok(()) => {
+                    tracing::info!("Relay от bootstrap получены успешно");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("Bootstrap fetch попытка {attempt} провалилась: {e}");
+                    if attempt < 8 {
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_secs(120));
+                    }
+                }
+            }
+        }
+        tracing::error!(
+            "Bootstrap недоступен после 8 попыток: {}. Пользователь может ввести URL вручную в Settings.",
+            bootstrap_url
+        );
+    });
+}
+
+/// Сохраняет URL bootstrap-сервера в локальной БД и немедленно подтягивает
+/// список relay.
+///
+/// Фронтенд вызывает эту команду когда пользователь вводит адрес сервера
+/// в Settings. После этого URL сохраняется навсегда — при каждом следующем
+/// запуске приложение само подключается без участия пользователя.
+#[tauri::command]
+async fn set_bootstrap_url(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<(), String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL не может быть пустым".to_string());
+    }
+
+    // Базовая валидация — должно быть http:// или https://
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("URL должен начинаться с http:// или https://".to_string());
+    }
+
+    // Сохраняем в БД
+    {
+        let db = state.db.lock().await;
+        db.set_setting("bootstrap_url", &url)
+            .map_err(|e| format!("Ошибка сохранения URL: {e}"))?;
+    }
+
+    // Немедленно пробуем получить relay
+    fetch_relays_from_bootstrap(&url, &state.node_commands).await
+}
+
+/// Возвращает сохранённый URL bootstrap-сервера (или null если не задан).
+#[tauri::command]
+async fn get_bootstrap_url(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let db = state.db.lock().await;
+    db.get_setting("bootstrap_url").map_err(|e| e.to_string())
+}
+
+/// Удаляет сохранённый URL bootstrap-сервера (сброс).
+#[tauri::command]
+async fn clear_bootstrap_url(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_setting("bootstrap_url").map_err(|e| e.to_string())
+}
+
+/// Передаёт список relay вручную (legacy / override).
+/// Оставлено для совместимости и продвинутых пользователей.
+#[tauri::command]
+async fn update_relays(
+    state: State<'_, AppState>,
+    relays: Vec<RelayInfoDto>,
+) -> Result<(), String> {
+    apply_relays_internal(relays, &state.node_commands).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -250,7 +394,9 @@ pub fn run() {
 
             let me = match db.load_identity().expect("failed to read identity") {
                 Some((secret_bytes, saved_user_id)) => {
-                    let identity = Identity::from_secret_bytes(secret_bytes);
+                    let identity = Identity::from_secret_bytes(
+    secret_bytes.try_into().expect("secret must be 32 bytes")
+);
                     debug_assert_eq!(identity.user_id, saved_user_id);
                     identity
                 }
@@ -291,37 +437,78 @@ pub fn run() {
                     secret
                 }
             };
+            let onion_public = PublicKey::from(&onion_secret);
+            tracing::info!(
+                "Onion public key (если узел relay): {}",
+                hex::encode(onion_public.as_bytes())
+            );
 
-            let me = Arc::new(me);
+            // Читаем сохранённый bootstrap_url ДО того как база уходит в Arc<Mutex>
+            let saved_bootstrap_url = db.get_setting("bootstrap_url")
+                .ok()
+                .flatten();
+
             let db = Arc::new(Mutex::new(db));
 
-            let identity_db = Database::open(&path).expect("failed to open identity-lookup db");
-            let identity_source: Arc<dyn PeerIdentitySource> = Arc::new(DbPeerIdentitySource::new(identity_db));
+            let cfg = {
+                #[cfg(target_os = "android")]
+                {
+                    let files_dir = app_handle
+                        .path()
+                        .app_data_dir()
+                        .expect("failed to get app data dir")
+                        .to_string_lossy()
+                        .into_owned();
+                    Config::from_env().with_android_paths(&files_dir)
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    Config::from_env()
+                }
+            };
 
-            // Создаём пустой реестр relay — заполнится через update_relays()
-            // (Tauri command), который фронтенд вызывает после получения
-            // relay-списка от bootstrap.
+            let me = Arc::new(me);
+
+            let identity_db_path = path.clone();
+            let identity_source: Arc<dyn PeerIdentitySource> = Arc::new(
+                DbPeerIdentitySource::new(
+                    Database::open(&identity_db_path).expect("failed to open identity db"),
+                ),
+            );
+
             let relay_registry = RelayRegistry::new();
 
-            let (node_cmd_tx, node_cmd_rx) = mpsc::unbounded_channel::<NodeCommand>();
-            let node_cmd_tx_tasks = node_cmd_tx.clone();
+            let (node_cmd_tx, node_cmd_rx) =
+                mpsc::unbounded_channel::<NodeCommand>();
 
             app.manage(AppState {
                 db: db.clone(),
                 me: me.clone(),
-                node_commands: node_cmd_tx,
+                node_commands: node_cmd_tx.clone(),
             });
 
-            let me = me.clone();
-            let db_for_incoming = db.clone();
+            let node_cmd_tx_tasks = node_cmd_tx.clone();
             let registry_for_tasks = relay_registry.clone();
 
+            let db_for_incoming = db.clone();
+
+            // Если bootstrap_url уже сохранён в БД — запускаем авто-fetch
+            // до инициализации ноды, чтобы relay были готовы сразу.
+            // Если BOOTSTRAP_URL задан в env — приоритет у него.
+            let effective_bootstrap_url = cfg.bootstrap_url.clone().or(saved_bootstrap_url);
+
+            if let Some(ref url) = effective_bootstrap_url {
+                tracing::info!("Сохранённый bootstrap URL найден, запускаем авто-fetch: {url}");
+                spawn_bootstrap_fetch(url.clone(), node_cmd_tx.clone());
+            }
+
             tauri::async_runtime::spawn(async move {
-                let cfg = Config::from_env();
-                let (mut node, mut incoming_rx) = match NodeHandle::start(
+                let identity_source_clone: Arc<dyn PeerIdentitySource> = identity_source;
+
+                let (mut node, mut incoming_rx) = NodeHandle::start(
                     &cfg,
                     me.clone(),
-                    identity_source,
+                    identity_source_clone,
                     x3dh_identity,
                     signed_prekey,
                     one_time_prekeys,
@@ -329,22 +516,18 @@ pub fn run() {
                     relay_registry,
                 )
                 .await
-                {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        tracing::error!("Не удалось поднять network node: {e:?}");
-                        return;
-                    }
-                };
+                .expect("failed to start libp2p node");
+
                 tracing::info!("libp2p нод поднят: {}", node.local_peer_id);
 
-                // Публикуем DhtRecord с пустым mailbox_candidates —
-                // заполнится после получения relay от bootstrap через
-                // update_relays (Tauri command).
+                // Публикуем DHT-запись с пустыми mailbox_candidates —
+                // relay придут от bootstrap через NodeCommand::UpdateRelays
+                // (см. spawn_bootstrap_fetch выше), после чего фоновые задачи
+                // и RepublishDht обновят запись с заполненными кандидатами.
                 let my_record = network::dht::DhtRecordBuilder::build(
                     &me.user_id,
                     me.verifying_key.as_bytes().to_vec(),
-                    vec![], // заполнится после bootstrap
+                    vec![],
                     |bytes| me.sign(bytes).to_bytes().to_vec(),
                 );
                 if let Err(e) = node.publish_my_record(&my_record) {
@@ -362,14 +545,11 @@ pub fn run() {
                     tracing::error!("Не удалось опубликовать PreKeyBundle: {e:?}");
                 }
 
-                // Немедленная синхронизация: если реестр пуст (bootstrap ещё
-                // не ответил) — sync пропустит mailbox fetch без ошибки.
                 messenger_backend::services::sync::sync_on_startup(
                     &node_cmd_tx_tasks,
                     &registry_for_tasks,
                 );
 
-                // Фоновые задачи: читают relay из RelayRegistry динамически.
                 messenger_backend::services::background::run_background_tasks(
                     node_cmd_tx_tasks,
                     &cfg,
@@ -411,6 +591,9 @@ pub fn run() {
             send_message,
             lookup_user,
             update_relays,
+            set_bootstrap_url,
+            get_bootstrap_url,
+            clear_bootstrap_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

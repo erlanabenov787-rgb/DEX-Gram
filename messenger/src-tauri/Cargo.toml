@@ -17,6 +17,9 @@ hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+# HTTP-клиент для fetch relay от bootstrap-сервера.
+# rustls вместо native-tls: не тянет OpenSSL, меньше размер APK.
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 [lib]
 name = "messenger_app_lib"

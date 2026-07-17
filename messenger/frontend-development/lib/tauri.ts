@@ -63,6 +63,7 @@ type MockState = {
   contacts: Contact[]
   history: Record<string, HistoryItem[]>
   connected: boolean
+  bootstrapUrl: string | null
   listeners: Set<(payload: MessageReceived) => void>
 }
 
@@ -82,6 +83,7 @@ function mockState(): MockState {
     g.__messengerMock = {
       contacts,
       connected: false,
+      bootstrapUrl: null,
       listeners: new Set(),
       history: {
         [contacts[0].user_id]: [
@@ -94,177 +96,108 @@ function mockState(): MockState {
           { direction: "received", text: "got it, connected 👍", sent_at: nowSec() - 7100 },
         ],
         [contacts[2].user_id]: [
-          { direction: "received", text: "I echo everything you send me. try it.", sent_at: nowSec() - 120 },
+          { direction: "sent", text: "test", sent_at: nowSec() - 100 },
+          { direction: "received", text: "test", sent_at: nowSec() - 99 },
         ],
       },
     }
   }
-  return g.__messengerMock
+  return g.__messengerMock!
 }
 
-function delay(ms: number) {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const s = mockState()
-  switch (cmd) {
-    case "get_me":
-      return mockMe as T
-    case "get_my_card":
-      return `${mockMe.user_id}:${mockMe.public_key_hex}` as T
-    case "list_contacts":
-      return [...s.contacts] as T
-    case "add_contact": {
-      const userId = args?.userId as string
-      const displayName = args?.displayName as string
-      if (!s.contacts.some((c) => c.user_id === userId)) {
-        s.contacts.push({ user_id: userId, display_name: displayName })
-        s.history[userId] = s.history[userId] ?? []
-      }
-      return undefined as T
-    }
-    case "get_history": {
-      const id = args?.contactUserId as string
-      return (s.history[id] ?? []) as T
-    }
-    case "send_message": {
-      const id = args?.contactUserId as string
-      const text = args?.text as string
-      await delay(600)
-      if (!s.connected) {
-        throw "relay layer not connected — call update_relays first"
-      }
-      s.history[id] = s.history[id] ?? []
-      s.history[id].push({ direction: "sent", text, sent_at: nowSec() })
-      // The demo "Echo" contact bounces messages back so real-time updates
-      // can be seen in the preview.
-      if (id.startsWith("112233")) {
-        await delay(900)
-        s.history[id].push({ direction: "received", text, sent_at: nowSec() })
-        s.listeners.forEach((fn) => fn({ from_user_id: id, text }))
-      }
-      return undefined as T
-    }
-    case "lookup_user": {
-      const userId = args?.userId as string
-      await delay(2200)
-      if (userId.length < 8) throw "user not found on the network"
-      return { user_id: userId, public_key_hex: randomHex(64) } as T
-    }
-    case "update_relays": {
-      const relays = (args?.relays as Relay[]) ?? []
-      await delay(1200)
-      if (!Array.isArray(relays) || relays.length === 0) {
-        throw "no relays provided — the bootstrap response was empty"
-      }
-      s.connected = true
-      return undefined as T
-    }
-    default:
-      throw `unknown command: ${cmd}`
-  }
-}
-
-async function mockListen(
+function mockListen(
   _event: string,
-  handler: (payload: MessageReceived) => void,
+  _handler: (payload: MessageReceived) => void,
 ): Promise<() => void> {
-  const s = mockState()
-  s.listeners.add(handler)
-  return () => {
-    s.listeners.delete(handler)
-  }
+  const state = mockState()
+  state.listeners.add(_handler)
+  return Promise.resolve(() => state.listeners.delete(_handler))
 }
 
 // ---------------------------------------------------------------------------
-// Public API — identical shape regardless of environment
+// Unified API surface
 // ---------------------------------------------------------------------------
-
-const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
-  isTauri() ? realInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args)
 
 export const api = {
-  getMe: () => call<Me>("get_me"),
-  getMyCard: () => call<string>("get_my_card"),
-  listContacts: () => call<Contact[]>("list_contacts"),
-  addContact: (userId: string, displayName: string, publicKeyHex: string) =>
-    call<void>("add_contact", { userId, displayName, publicKeyHex }),
-  getHistory: (contactUserId: string, limit = 200) =>
-    call<HistoryItem[]>("get_history", { contactUserId, limit }),
-  sendMessage: (contactUserId: string, text: string) =>
-    call<void>("send_message", { contactUserId, text }),
-  lookupUser: (userId: string) => call<Me>("lookup_user", { userId }),
-  updateRelays: (relays: Relay[]) => call<void>("update_relays", { relays }),
-}
-
-// Placeholder relay set. In production the relays come from the bootstrap
-// server response, which the user pastes into the connection form (until the
-// dedicated bootstrap client is wired up to fetch them automatically).
-export const PLACEHOLDER_RELAYS: Relay[] = mockRelays
-
-// A realistic example of what a bootstrap server hands back. Offered as a
-// "paste sample" affordance so the connection flow can be exercised in the
-// preview without a live bootstrap server.
-export const SAMPLE_BOOTSTRAP_RESPONSE = JSON.stringify(
-  {
-    relays: [
-      {
-        peer_id: "12D3KooWQ8b7f2aEr4Jd9pLmN3xY6vHk1sT7wZ2cB5nD8gF0aQ",
-        multiaddr: "/onion3/v1x2y3z4a5b6c7d8e9f0g1h2i3j4k5l6:1042",
-        onion_public_key: "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d",
-      },
-      {
-        peer_id: "12D3KooWLmN3xY6vHk1sT7wZ2cB5nD8gF0aQ8b7f2aEr4Jd9pL",
-        multiaddr: "/onion3/q7w8e9r0t1y2u3i4o5p6a7s8d9f0g1h2:1042",
-        onion_public_key: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
-      },
-    ],
+  getMe(): Promise<Me> {
+    if (isTauri()) return realInvoke<Me>("get_me")
+    return Promise.resolve(mockMe)
   },
-  null,
-  2,
-)
 
-// Parses the raw text a user pastes from their bootstrap server into a typed
-// relay list. Accepts either a bare array or an object with a `relays` key.
-// Throws a plain-string error (matching the backend convention) on bad input.
-export function parseBootstrapResponse(raw: string): Relay[] {
-  const trimmed = raw.trim()
-  if (!trimmed) throw "Paste the bootstrap server response first."
+  listContacts(): Promise<Contact[]> {
+    if (isTauri()) return realInvoke<Contact[]>("list_contacts")
+    return Promise.resolve([...mockState().contacts])
+  },
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    throw "That isn't valid JSON. Paste the raw response from your bootstrap server."
-  }
+  addContact(user_id: string, display_name: string, public_key_hex: string): Promise<void> {
+    if (isTauri()) return realInvoke<void>("add_contact", { user_id, display_name, public_key_hex })
+    mockState().contacts.push({ user_id, display_name })
+    return Promise.resolve()
+  },
 
-  const arr = Array.isArray(parsed)
-    ? parsed
-    : (parsed as { relays?: unknown })?.relays
+  getHistory(contact_user_id: string, limit: number): Promise<HistoryItem[]> {
+    if (isTauri()) return realInvoke<HistoryItem[]>("get_history", { contact_user_id, limit })
+    return Promise.resolve(mockState().history[contact_user_id] ?? [])
+  },
 
-  if (!Array.isArray(arr) || arr.length === 0) {
-    throw "Expected a non-empty list of relays (an array, or an object with a \"relays\" array)."
-  }
-
-  return arr.map((item, i) => {
-    const r = item as Record<string, unknown>
-    const peer_id = r?.peer_id
-    const multiaddr = r?.multiaddr
-    const onion_public_key = r?.onion_public_key
-    if (
-      typeof peer_id !== "string" ||
-      typeof multiaddr !== "string" ||
-      typeof onion_public_key !== "string" ||
-      !peer_id ||
-      !multiaddr ||
-      !onion_public_key
-    ) {
-      throw `Relay #${i + 1} is missing "peer_id", "multiaddr", or "onion_public_key".`
+  sendMessage(contact_user_id: string, text: string): Promise<void> {
+    if (isTauri()) return realInvoke<void>("send_message", { contact_user_id, text })
+    const state = mockState()
+    if (!state.history[contact_user_id]) state.history[contact_user_id] = []
+    state.history[contact_user_id].push({ direction: "sent", text, sent_at: nowSec() })
+    // Echo demo
+    if (contact_user_id === state.contacts[2]?.user_id) {
+      setTimeout(() => {
+        state.history[contact_user_id].push({ direction: "received", text, sent_at: nowSec() + 1 })
+        state.listeners.forEach((h) => h({ from_user_id: contact_user_id, text }))
+      }, 600)
     }
-    return { peer_id, multiaddr, onion_public_key }
-  })
+    return Promise.resolve()
+  },
+
+  getMyCard(): Promise<string> {
+    if (isTauri()) return realInvoke<string>("get_my_card")
+    return Promise.resolve(JSON.stringify(mockMe))
+  },
+
+  lookupUser(user_id: string): Promise<{ user_id: string; public_key_hex: string }> {
+    if (isTauri()) return realInvoke("lookup_user", { user_id })
+    const contact = mockState().contacts.find((c) => c.user_id === user_id)
+    if (!contact) return Promise.reject("User not found")
+    return Promise.resolve({ user_id, public_key_hex: randomHex(64) })
+  },
+
+  updateRelays(relays: Relay[]): Promise<void> {
+    if (isTauri()) return realInvoke<void>("update_relays", { relays })
+    mockState().connected = true
+    return Promise.resolve()
+  },
+
+  /// Сохраняет URL bootstrap-сервера и немедленно получает relay от него.
+  /// После этого вызова relay подтягиваются автоматически при каждом запуске.
+  setBootstrapUrl(url: string): Promise<void> {
+    if (isTauri()) return realInvoke<void>("set_bootstrap_url", { url })
+    mockState().bootstrapUrl = url
+    mockState().connected = true // mock: считаем что сразу ок
+    return Promise.resolve()
+  },
+
+  /// Возвращает сохранённый URL bootstrap-сервера (null если не задан).
+  getBootstrapUrl(): Promise<string | null> {
+    if (isTauri()) return realInvoke<string | null>("get_bootstrap_url")
+    return Promise.resolve(mockState().bootstrapUrl)
+  },
+
+  /// Сбрасывает сохранённый URL bootstrap-сервера.
+  clearBootstrapUrl(): Promise<void> {
+    if (isTauri()) return realInvoke<void>("clear_bootstrap_url")
+    mockState().bootstrapUrl = null
+    return Promise.resolve()
+  },
 }
+
+// Sample bootstrap response (for mock/dev preview only)
+export const SAMPLE_BOOTSTRAP_URL = "http://your-friend-pc:8080"
 
 export function onMessageReceived(handler: (payload: MessageReceived) => void): Promise<() => void> {
   return isTauri() ? realListen("message-received", handler) : mockListen("message-received", handler)

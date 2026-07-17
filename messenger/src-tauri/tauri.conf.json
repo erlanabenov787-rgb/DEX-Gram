@@ -1,12 +1,11 @@
 {
   "$schema": "./gen/schemas/desktop-schema.json",
-  "productName": "messenger-app",
+  "productName": "Meshly",
   "version": "0.1.0",
   "identifier": "kz.yerlan.messenger",
   "build": {
-    "beforeDevCommand": "cd ../frontend-development && pnpm dev",
+    "beforeDevCommand": "cd ../frontend-development && npm run dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "cd ../frontend-development && pnpm build",
     "frontendDist": "../frontend-development/out"
   },
   "app": {

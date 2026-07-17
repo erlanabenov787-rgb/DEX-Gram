@@ -27,7 +27,7 @@ pub type StaticRelay = RelayInfo;
 pub struct Config {
     pub listen_port: u16,
     pub db_path: String,
-    /// Bootstrap-ноды для первоначального подключения к сети.
+    /// Bootstrap-ноды для первоначального подключения к сети (libp2p DHT).
     /// После соединения с bootstrap клиент автоматически получает
     /// список relay — пользователь relay не вводит вручную.
     pub bootstrap_nodes: Vec<String>,
@@ -36,6 +36,13 @@ pub struct Config {
     pub pow_difficulty_bits: u32,
     pub dummy_traffic_interval_secs_min: u64,
     pub dummy_traffic_interval_secs_max: u64,
+    /// HTTP(S) адрес bootstrap-сервера для получения списка relay.
+    ///
+    /// Если задан через env BOOTSTRAP_URL — нода при старте делает
+    /// GET {bootstrap_url}/relays и применяет список relay без участия
+    /// пользователя. Если не задан — список relay берётся из БД
+    /// (сохранённый пользователем ранее через set_bootstrap_url в Tauri).
+    pub bootstrap_url: Option<String>,
 }
 
 impl Default for Config {
@@ -51,6 +58,7 @@ impl Default for Config {
             pow_difficulty_bits: 20,
             dummy_traffic_interval_secs_min: 20,
             dummy_traffic_interval_secs_max: 40,
+            bootstrap_url: None,
         }
     }
 }
@@ -68,7 +76,8 @@ impl Config {
     /// Переменные:
     /// - LISTEN_PORT (u16)
     /// - DB_PATH (строка)
-    /// - BOOTSTRAP_NODES (multiaddr через запятую)
+    /// - BOOTSTRAP_NODES (libp2p multiaddr через запятую)
+    /// - BOOTSTRAP_URL (HTTP(S) адрес bootstrap-сервера для relay)
     /// - IS_RELAY ("true"/"1"/"false"/"0")
     /// - RELAY_MAX_BANDWIDTH_KBPS (u32)
     /// - POW_DIFFICULTY_BITS (u32)
@@ -88,6 +97,10 @@ impl Config {
 
         if let Ok(v) = std::env::var("BOOTSTRAP_NODES") {
             cfg.bootstrap_nodes = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+
+        if let Ok(v) = std::env::var("BOOTSTRAP_URL") {
+            cfg.bootstrap_url = Some(v.trim().to_string());
         }
 
         if let Ok(v) = std::env::var("IS_RELAY") {

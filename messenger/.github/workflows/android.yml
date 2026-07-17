@@ -12,34 +12,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Java (нужен для Gradle/Android) ────────────────────────────────────
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      # ── Android SDK + NDK ───────────────────────────────────────────────────
-      - name: Setup Android SDK
-        id: setup-android
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK 27
-        run: sdkmanager --install "ndk;27.0.12077973"
-
-      # ── Rust + Android targets ──────────────────────────────────────────────
-      - name: Setup Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      # ── Node.js + pnpm ──────────────────────────────────────────────────────
-      - name: Setup Node.js 22
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -47,34 +20,68 @@ jobs:
       - name: Enable pnpm
         run: corepack enable && corepack prepare pnpm@9.15.0 --activate
 
-      # ── Tauri CLI (через npm — prebuilt бинарь, намного быстрее cargo install)
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@^2
-
-      # ── Frontend: установка зависимостей + сборка ──────────────────────────
       - name: Install frontend deps
         working-directory: frontend-development
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
-      - name: Build frontend (Next.js → static export → out/)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: android-aarch64
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Remove stale gen/android
+        run: rm -rf src-tauri/gen/android
+
+      - name: Build frontend
         working-directory: frontend-development
-        run: pnpm build
-        env:
-          NEXT_TELEMETRY_DISABLED: 1
+        run: pnpm run build
 
-      # ── APK (debug — автоматически подписан, можно сразу ставить на телефон)
-      - name: Build Android debug APK
-        env:
-          NDK_HOME: ${{ steps.setup-android.outputs.ndk-path }}
-          ANDROID_HOME: ${{ steps.setup-android.outputs.sdk-path }}
-          ANDROID_SDK_ROOT: ${{ steps.setup-android.outputs.sdk-path }}
-        run: tauri android build --apk --debug
+      - name: Init Android project
+        run: cargo tauri android init
 
-      # ── Загружаем APK как артефакт ─────────────────────────────────────────
+      - name: Regenerate app icons
+        run: cargo tauri icon src-tauri/icons/icon.png
+
+      - name: Build Android APK
+        working-directory: src-tauri
+        run: cargo tauri android build --apk --debug
+        env:
+          TAURI_ANDROID_TARGET_TRIPLES: aarch64-linux-android
+
+      - name: List APK sizes (диагностика)
+        run: |
+          find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" \
+            -exec du -sh {} \;
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: messenger-debug
-          path: src-tauri/gen/android/app/build/outputs/apk/debug/*.apk
+          name: messenger-apk-aarch64
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
-          retention-days: 14
