@@ -217,10 +217,10 @@ impl NodeHandle {
         our_signed_prekey: x25519_dalek::StaticSecret,
         our_one_time_prekeys: Vec<x25519_dalek::StaticSecret>,
         our_onion_secret: x25519_dalek::StaticSecret,
-        /// Динамический реестр relay-узлов. Создаётся снаружи (main.rs /
-        /// lib.rs) и передаётся сюда, чтобы фоновые задачи и NodeHandle
-        /// использовали один и тот же экземпляр — обновление через
-        /// NodeCommand::UpdateRelays видно всем сразу.
+        // Динамический реестр relay-узлов. Создаётся снаружи (main.rs /
+        // lib.rs) и передаётся сюда, чтобы фоновые задачи и NodeHandle
+        // использовали один и тот же экземпляр — обновление через
+        // NodeCommand::UpdateRelays видно всем сразу.
         relay_registry: Arc<RelayRegistry>,
     ) -> anyhow::Result<(Self, IncomingReceiver)> {
         let keypair = libp2p::identity::Keypair::generate_ed25519();
