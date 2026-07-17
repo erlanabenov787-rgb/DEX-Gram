@@ -71,7 +71,7 @@ jobs:
 
       - name: Build Android APK
         working-directory: src-tauri
-        run: cargo tauri android build --apk
+        run: ctauri android build --apk --debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
