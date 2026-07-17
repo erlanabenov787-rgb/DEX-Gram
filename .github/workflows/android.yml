@@ -55,7 +55,7 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Remove stale gen/android (regenerated fresh below)
+      - name: Remove stale gen/android
         run: rm -rf src-tauri/gen/android
 
       - name: Build frontend
@@ -63,15 +63,13 @@ jobs:
         run: pnpm run build
 
       - name: Init Android project
-        working-directory: src-tauri
         run: cargo tauri android init
 
       - name: Regenerate app icons
         run: cargo tauri icon src-tauri/icons/icon.png
 
       - name: Build Android APK
-        working-directory: src-tauri
-        run: tauri android build --apk --debug
+        run: cargo tauri android build --apk --debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
