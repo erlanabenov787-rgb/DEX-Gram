@@ -19,8 +19,8 @@ src-tauri/gen/android/local.properties
 src-tauri/gen/android
 
 # Стale/duplicate copies — NOT part of the build
-extracted_project/
-messenger/
+/extracted_project/
+/messenger/
 
 # OS junk
 .DS_Store
