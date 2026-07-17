@@ -39,6 +39,9 @@ jobs:
           sdkmanager --install "ndk;27.0.12077973"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
