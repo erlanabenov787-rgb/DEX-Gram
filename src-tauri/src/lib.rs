@@ -144,10 +144,13 @@ async fn send_message(
     let (resp_tx, resp_rx) = oneshot::channel();
     state
         .node_commands
-        .send(NodeCommand::SendMessage {
             to: contact_user_id.clone(),
-            plaintext: text.into_bytes(),
-            reply: resp_tx,
+    text: text.into_bytes(),
+    respond_to: resp_tx,
+}).send(NodeCommand::SendText {
+            to: contact_user_id.clone(),
+            text: text.into_bytes(),
+            respond_to: resp_tx,
         })
         .map_err(|_| "network node не запущен".to_string())?;
 
@@ -176,7 +179,7 @@ async fn lookup_user(
         .node_commands
         .send(NodeCommand::LookupUser {
             user_id: user_id.clone(),
-            reply: resp_tx,
+            respond_to: resp_tx,
         })
         .map_err(|_| "network node не запущен".to_string())?;
 
@@ -394,7 +397,9 @@ pub fn run() {
 
             let me = match db.load_identity().expect("failed to read identity") {
                 Some((secret_bytes, saved_user_id)) => {
-                    let identity = Identity::from_secret_bytes(secret_bytes);
+                    let identity = Identity::from_secret_bytes(
+    secret_bytes.try_into().expect("secret must be 32 bytes")
+);
                     debug_assert_eq!(identity.user_id, saved_user_id);
                     identity
                 }
