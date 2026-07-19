@@ -26,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
     // без этого UserID менялся бы при каждом перезапуске приложения.
     let me = match db.load_identity()? {
         Some((secret_bytes, saved_user_id)) => {
+            let secret_bytes: [u8; 32] = secret_bytes.try_into().map_err(|v: Vec<u8>| {
+                anyhow::anyhow!(
+                    "Повреждённые данные identity в БД: ожидалось 32 байта секретного ключа, получено {}",
+                    v.len()
+                )
+            })?;
             let identity = Identity::from_secret_bytes(secret_bytes);
             debug_assert_eq!(identity.user_id, saved_user_id, "UserID не совпал с сохранённым — повреждение данных?");
             tracing::info!("Загружена существующая identity: {}", identity.user_id);

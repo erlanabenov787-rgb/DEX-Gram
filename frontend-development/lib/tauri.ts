@@ -130,18 +130,18 @@ export const api = {
   },
 
   addContact(user_id: string, display_name: string, public_key_hex: string): Promise<void> {
-    if (isTauri()) return realInvoke<void>("add_contact", { user_id, display_name, public_key_hex })
+    if (isTauri()) return realInvoke<void>("add_contact", { userId: user_id, displayName: display_name, publicKeyHex: public_key_hex })
     mockState().contacts.push({ user_id, display_name })
     return Promise.resolve()
   },
 
   getHistory(contact_user_id: string, limit: number): Promise<HistoryItem[]> {
-    if (isTauri()) return realInvoke<HistoryItem[]>("get_history", { contact_user_id, limit })
+    if (isTauri()) return realInvoke<HistoryItem[]>("get_history", { contactUserId: contact_user_id, limit })
     return Promise.resolve(mockState().history[contact_user_id] ?? [])
   },
 
   sendMessage(contact_user_id: string, text: string): Promise<void> {
-    if (isTauri()) return realInvoke<void>("send_message", { contact_user_id, text })
+    if (isTauri()) return realInvoke<void>("send_message", { contactUserId: contact_user_id, text })
     const state = mockState()
     if (!state.history[contact_user_id]) state.history[contact_user_id] = []
     state.history[contact_user_id].push({ direction: "sent", text, sent_at: nowSec() })
@@ -161,7 +161,7 @@ export const api = {
   },
 
   lookupUser(user_id: string): Promise<{ user_id: string; public_key_hex: string }> {
-    if (isTauri()) return realInvoke("lookup_user", { user_id })
+    if (isTauri()) return realInvoke("lookup_user", { userId: user_id })
     const contact = mockState().contacts.find((c) => c.user_id === user_id)
     if (!contact) return Promise.reject("User not found")
     return Promise.resolve({ user_id, public_key_hex: randomHex(64) })
