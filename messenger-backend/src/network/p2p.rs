@@ -257,7 +257,28 @@ impl NodeHandle {
                         request_response::Config::default(),    
                     ),    
                 }    
-            })?    
+            })?
+            // ВАЖНО: libp2p 0.53 по умолчанию ставит idle_connection_timeout
+            // = Duration::ZERO — это значит, что ЛЮБОЕ соединение, у которого
+            // прямо сейчас нет активного протокольного стрима, закрывается
+            // МГНОВЕННО. UpdateRelays делает swarm.dial(addr) когда приходит
+            // список от bootstrap — соединение поднимается, но т.к. в этот
+            // момент ни один протокол (kademlia query, request_response
+            // request) ещё не открыт, оно тут же схлопывается через
+            // idle_connection_timeout=0. К моменту, когда пользователь жмёт
+            // "отправить" и dispatcher::send_message вызывает send_packet,
+            // соединения с relay уже нет — request_response пытается
+            // передозвониться, но у него нет known-адреса для этого PeerId
+            // (дозвон делался по голому Multiaddr без /p2p/<peer_id>),
+            // поэтому запрос тихо проваливается в event loop (см.
+            // "Outbound messaging failure to {peer}"), а send_packet УЖЕ
+            // вернул Ok(()), потому что send_request() не ждёт реальной
+            // доставки — только кладёт запрос в очередь.
+            // Итог твоего симптома: UI показывает "отправлено", relay не
+            // получает НИЧЕГО. Фикс: держим соединение живым достаточно
+            // долго, чтобы реальная отправка успела произойти по уже
+            // установленному соединению.
+            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(120)))
             .build();    
 
         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", cfg.listen_port).parse()?;    
@@ -566,8 +587,24 @@ impl NodeHandle {
                 self.relay_registry.update(relays.clone());
 
                 // 2. Подключаемся к новым relay и сохраняем репутацию в БД.
+                //
+                // ВАЖНО: bootstrap отдаёт голый Multiaddr без /p2p/<peer_id>
+                // (см. bootstrap-server). Раньше дозванивались именно по
+                // такому голому адресу — swarm поднимал соединение, но НЕ
+                // связывал его в своей адресной книге с entry.relay_id,
+                // потому что peer_id для дозвона явно не указывался. Из-за
+                // этого при обрыве (см. idle_connection_timeout выше)
+                // request_response::send_request(&peer_id, ...) не мог сам
+                // передозвониться — известного адреса для этого PeerId не
+                // было. Добавляем /p2p/<relay_id> к multiaddr явно, чтобы
+                // swarm держал адрес в адресной книге и мог передозваниваться
+                // сам при разрыве соединения.
                 for entry in &relays {
-                    if let Ok(addr) = entry.address.parse::<Multiaddr>() {
+                    let full_addr = format!("{}/p2p/{}", entry.address, entry.relay_id);
+                    let parsed = full_addr
+                        .parse::<Multiaddr>()
+                        .or_else(|_| entry.address.parse::<Multiaddr>());
+                    if let Ok(addr) = parsed {
                         if let Err(e) = self.swarm.dial(addr.clone()) {
                             tracing::warn!(
                                 "UpdateRelays: не удалось подключиться к relay {} ({addr}): {e}",

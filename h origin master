@@ -1,0 +1,60 @@
+[1mdiff --git a/messenger-backend/src/network/p2p.rs b/messenger-backend/src/network/p2p.rs[m
+[1mindex 2628b38..84637ef 100644[m
+[1m--- a/messenger-backend/src/network/p2p.rs[m
+[1m+++ b/messenger-backend/src/network/p2p.rs[m
+[36m@@ -257,7 +257,28 @@[m [mimpl NodeHandle {[m
+                         request_response::Config::default(),    [m
+                     ),    [m
+                 }    [m
+[31m-            })?    [m
+[32m+[m[32m            })?[m
+[32m+[m[32m            // ВАЖНО: libp2p 0.53 по умолчанию ставит idle_connection_timeout[m
+[32m+[m[32m            // = Duration::ZERO — это значит, что ЛЮБОЕ соединение, у которого[m
+[32m+[m[32m            // прямо сейчас нет активного протокольного стрима, закрывается[m
+[32m+[m[32m            // МГНОВЕННО. UpdateRelays делает swarm.dial(addr) когда приходит[m
+[32m+[m[32m            // список от bootstrap — соединение поднимается, но т.к. в этот[m
+[32m+[m[32m            // момент ни один протокол (kademlia query, request_response[m
+[32m+[m[32m            // request) ещё не открыт, оно тут же схлопывается через[m
+[32m+[m[32m            // idle_connection_timeout=0. К моменту, когда пользователь жмёт[m
+[32m+[m[32m            // "отправить" и dispatcher::send_message вызывает send_packet,[m
+[32m+[m[32m            // соединения с relay уже нет — request_response пытается[m
+[32m+[m[32m            // передозвониться, но у него нет known-адреса для этого PeerId[m
+[32m+[m[32m            // (дозвон делался по голому Multiaddr без /p2p/<peer_id>),[m
+[32m+[m[32m            // поэтому запрос тихо проваливается в event loop (см.[m
+[32m+[m[32m            // "Outbound messaging failure to {peer}"), а send_packet УЖЕ[m
+[32m+[m[32m            // вернул Ok(()), потому что send_request() не ждёт реальной[m
+[32m+[m[32m            // доставки — только кладёт запрос в очередь.[m
+[32m+[m[32m            // Итог твоего симптома: UI показывает "отправлено", relay не[m
+[32m+[m[32m            // получает НИЧЕГО. Фикс: держим соединение живым достаточно[m
+[32m+[m[32m            // долго, чтобы реальная отправка успела произойти по уже[m
+[32m+[m[32m            // установленному соединению.[m
+[32m+[m[32m            .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(120)))[m
+             .build();    [m
+ [m
+         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", cfg.listen_port).parse()?;    [m
+[36m@@ -566,8 +587,24 @@[m [mimpl NodeHandle {[m
+                 self.relay_registry.update(relays.clone());[m
+ [m
+                 // 2. Подключаемся к новым relay и сохраняем репутацию в БД.[m
+[32m+[m[32m                //[m
+[32m+[m[32m                // ВАЖНО: bootstrap отдаёт голый Multiaddr без /p2p/<peer_id>[m
+[32m+[m[32m                // (см. bootstrap-server). Раньше дозванивались именно по[m
+[32m+[m[32m                // такому голому адресу — swarm поднимал соединение, но НЕ[m
+[32m+[m[32m                // связывал его в своей адресной книге с entry.relay_id,[m
+[32m+[m[32m                // потому что peer_id для дозвона явно не указывался. Из-за[m
+[32m+[m[32m                // этого при обрыве (см. idle_connection_timeout выше)[m
+[32m+[m[32m                // request_response::send_request(&peer_id, ...) не мог сам[m
+[32m+[m[32m                // передозвониться — известного адреса для этого PeerId не[m
+[32m+[m[32m                // было. Добавляем /p2p/<relay_id> к multiaddr явно, чтобы[m
+[32m+[m[32m                // swarm держал адрес в адресной книге и мог передозваниваться[m
+[32m+[m[32m                // сам при разрыве соединения.[m
+                 for entry in &relays {[m
+[31m-                    if let Ok(addr) = entry.address.parse::<Multiaddr>() {[m
+[32m+[m[32m                    let full_addr = format!("{}/p2p/{}", entry.address, entry.relay_id);[m
+[32m+[m[32m                    let parsed = full_addr[m
+[32m+[m[32m                        .parse::<Multiaddr>()[m
+[32m+[m[32m                        .or_else(|_| entry.address.parse::<Multiaddr>());[m
+[32m+[m[32m                    if let Ok(addr) = parsed {[m
+                         if let Err(e) = self.swarm.dial(addr.clone()) {[m
+                             tracing::warn!([m
+                                 "UpdateRelays: не удалось подключиться к relay {} ({addr}): {e}",[m
