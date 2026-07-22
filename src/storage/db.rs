@@ -166,6 +166,20 @@ impl Database {
                 created_at INTEGER NOT NULL
             );
 
+            -- Идентичная проблема, что и с local_onion_key: если не
+            -- сохранять libp2p keypair, PeerId генерируется заново
+            -- случайным образом при каждом запуске. Для relay-узлов это
+            -- фатально — bootstrap-server отдаёт клиентам ЗАФИКСИРОВАННЫЙ
+            -- peer_id (relays.json), и после рестарта relay с новым
+            -- случайным PeerId клиенты продолжают дозваниваться на
+            -- старый (уже не существующий) peer_id -> сообщения не
+            -- доходят до relay, хотя сам relay-процесс жив и слушает порт.
+            CREATE TABLE IF NOT EXISTS local_p2p_keypair (
+                id INTEGER PRIMARY KEY CHECK (id = 0),
+                keypair_protobuf BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS known_relays (
                 relay_id TEXT PRIMARY KEY,
                 address TEXT NOT NULL,
@@ -324,6 +338,34 @@ impl Database {
                     Ok(None)
                 }
             }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Сохраняет libp2p keypair (protobuf-кодирование, см.
+    /// `Keypair::to_protobuf_encoding`) — чтобы PeerId был стабилен между
+    /// перезапусками. Критично для relay-узлов: bootstrap-server отдаёт
+    /// клиентам зафиксированный peer_id, который должен продолжать
+    /// совпадать с реальным узлом после рестарта.
+    pub fn save_p2p_keypair(&self, keypair_protobuf: &[u8]) -> SqlResult<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO local_p2p_keypair (id, keypair_protobuf, created_at)
+             VALUES (0, ?1, strftime('%s','now'))",
+            params![keypair_protobuf],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_p2p_keypair(&self) -> SqlResult<Option<Vec<u8>>> {
+        let conn = self.conn();
+        let result = conn.query_row(
+            "SELECT keypair_protobuf FROM local_p2p_keypair WHERE id = 0",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        );
+        match result {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }

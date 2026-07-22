@@ -26,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
     // без этого UserID менялся бы при каждом перезапуске приложения.
     let me = match db.load_identity()? {
         Some((secret_bytes, saved_user_id)) => {
+            let secret_bytes: [u8; 32] = secret_bytes.try_into().map_err(|v: Vec<u8>| {
+                anyhow::anyhow!(
+                    "secret_key в БД повреждён: ожидалось 32 байта, найдено {}",
+                    v.len()
+                )
+            })?;
             let identity = Identity::from_secret_bytes(secret_bytes);
             debug_assert_eq!(identity.user_id, saved_user_id, "UserID не совпал с сохранённым — повреждение данных?");
             tracing::info!("Загружена существующая identity: {}", identity.user_id);
@@ -127,6 +133,21 @@ async fn main() -> anyhow::Result<()> {
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<messenger_backend::network::NodeCommand>();
 
+    // Реальный фикс бага "сообщения отправляются, но никуда не доходят":
+    // раньше NodeCommand::UpdateRelays никто и никогда не отправлял, так
+    // что relay_registry оставался пустым навсегда и dispatcher::send_message
+    // валился на select_hops() ещё до выхода пакета в сеть. Смотри
+    // services/bootstrap.rs — там подробный разбор.
+    if let Some(bootstrap_url) = cfg.bootstrap_url.clone() {
+        messenger_backend::services::bootstrap::spawn_bootstrap_fetch(bootstrap_url, cmd_tx.clone());
+    } else {
+        tracing::warn!(
+            "BOOTSTRAP_URL не задан — relay_registry останется пустым, \
+             отправка сообщений будет падать с OnionChainTooShort. \
+             Задай env BOOTSTRAP_URL=http://<ip_друга>:<port> (без /relays на конце)."
+        );
+    }
+
     // Немедленная синхронизация при старте: mailbox fetch у всех relay
     // (если реестр ещё пуст — пропустится без ошибки) + DHT republish.
     messenger_backend::services::sync::sync_on_startup(&cmd_tx, &relay_registry);
@@ -134,8 +155,19 @@ async fn main() -> anyhow::Result<()> {
     // Background tasks — читают relay из RelayRegistry динамически
     // при каждой итерации, автоматически подхватят новые relay от bootstrap.
     messenger_backend::services::background::run_background_tasks(
-        cmd_tx,
+        cmd_tx.clone(),
         &cfg,
+        relay_registry.clone(),
+    );
+
+    // Debug CLI (Termux/без Tauri): help / myid / addcontact / contacts /
+    // send / history / relays / exit. Не дублирует логику отправки — всё
+    // идёт через тот же cmd_tx и NodeCommand::SendText, которым пользуется
+    // Tauri. См. src/cli.rs.
+    messenger_backend::cli::spawn_debug_cli(
+        cmd_tx.clone(),
+        me.clone(),
+        cfg.db_path.clone(),
         relay_registry,
     );
 
@@ -155,6 +187,9 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 tracing::info!("Сохранено входящее сообщение от {}", msg.from);
             }
+            // Явный вывод в stdout для debug CLI — чтобы во второй вкладке
+            // Termux было сразу видно "пришло", не копаясь в tracing-логах.
+            println!("\n📩 [{}]: {}\n> ", msg.from, text);
         }
     });
 

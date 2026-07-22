@@ -223,7 +223,55 @@ impl NodeHandle {
         // NodeCommand::UpdateRelays видно всем сразу.
         relay_registry: Arc<RelayRegistry>,
     ) -> anyhow::Result<(Self, IncomingReceiver)> {
-        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        // Раньше здесь всегда стоял Keypair::generate_ed25519() — новый
+        // случайный PeerId при КАЖДОМ запуске. Для relay-узлов это ломает
+        // всё: bootstrap-server (relays.json) отдаёт клиентам peer_id,
+        // зафиксированный один раз, а после рестарта relay с новым
+        // случайным PeerId клиенты продолжают дозваниваться на старый,
+        // уже не существующий адрес — relay жив, но недостижим под тем
+        // peer_id, который все знают. Теперь keypair персистится в БД
+        // (тот же паттерн, что local_onion_key чуть ниже) — PeerId
+        // остаётся стабильным между перезапусками.
+        let keypair_db = crate::storage::Database::open(&cfg.db_path)
+            .map_err(|e| anyhow::anyhow!("не удалось открыть базу для чтения p2p keypair {}: {e}", cfg.db_path))?;
+        let keypair = match keypair_db.load_p2p_keypair() {
+            Ok(Some(bytes)) => match libp2p::identity::Keypair::from_protobuf_encoding(&bytes) {
+                Ok(kp) => {
+                    tracing::info!("Загружен существующий libp2p keypair — PeerId стабилен между перезапусками");
+                    kp
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Сохранённый libp2p keypair повреждён ({e}), генерирую новый (PeerId изменится!)"
+                    );
+                    let kp = libp2p::identity::Keypair::generate_ed25519();
+                    if let Ok(encoded) = kp.to_protobuf_encoding() {
+                        let _ = keypair_db.save_p2p_keypair(&encoded);
+                    }
+                    kp
+                }
+            },
+            Ok(None) => {
+                let kp = libp2p::identity::Keypair::generate_ed25519();
+                match kp.to_protobuf_encoding() {
+                    Ok(encoded) => {
+                        if let Err(e) = keypair_db.save_p2p_keypair(&encoded) {
+                            tracing::warn!("Не удалось сохранить libp2p keypair в БД: {e}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("Не удалось закодировать libp2p keypair: {e}"),
+                }
+                tracing::info!("Создан новый libp2p keypair и сохранён в БД");
+                kp
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Ошибка чтения libp2p keypair из БД ({e}) — генерирую временный, \
+                     не сохранённый (PeerId изменится при следующем запуске)"
+                );
+                libp2p::identity::Keypair::generate_ed25519()
+            }
+        };
         let local_peer_id = PeerId::from(keypair.public());
         tracing::info!("libp2p PeerId: {local_peer_id}");
 
